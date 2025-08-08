@@ -6,3 +6,5 @@ TODOs:
 2. Code reorg, CI/CD and testing
 3. Add layernorm, convolutional layer, maxpool, and many more
 
+PRIORITY:
+1. Double check addition/subtraction logic and complete nn.Embeddings
