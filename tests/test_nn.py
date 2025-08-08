@@ -5,36 +5,37 @@ from mlib.nn import (
     set_seed,
     SimpleStep,
     ModuleSequence,
-    flatten,
-    Reshape,
-    DropOut,
-    SoftMax,
-    CrossEntropyLoss,
+    MSELoss,
 )
 import numpy as np
 
 set_seed(42)
 
-x = Tensor(np.random.randn(5, 1, 2))
-z = Tensor(np.array([[0], [0], [0], [1], [0]]))
-epochs = 20
 
-res = Reshape((2, 5))
-lin1 = Linear(20, 10)
-drop = DropOut(0.01)
-lin2 = Linear(5, 20)
-relu = ReLU()
-soft = SoftMax()
+def test_basic():
+    x = Tensor(np.random.randn(10, 1))
+    z = Tensor(np.random.randn(5, 1))
+    epochs = 10
 
+    lin1 = Linear(20, 10)
+    relu = ReLU()
+    lin2 = Linear(5, 20)
 
-loss_fn = CrossEntropyLoss()  # MSELoss()
-optim = SimpleStep(lr=0.01)
-model = ModuleSequence([res, flatten, lin1, relu, drop, lin2, soft], optim=optim)
+    loss_fn = MSELoss()
+    optim = SimpleStep(lr=0.01)
+    model = ModuleSequence([lin1, relu, lin2], optim=optim)
 
-for epoch in range(epochs):
-    model.zero_grad()
-    y = model(x)
-    loss = loss_fn(y, z)
-    loss.backward()
-    model.step()
-    print(f"Epoch {epoch + 1}/{epochs} loss: {loss.value}")
+    loss_val = 64
+
+    for _ in range(epochs):
+        model.zero_grad()
+        y = model(x)
+        loss = loss_fn(y, z)
+        loss.backward()
+        model.step()
+        assert loss.value < loss_val, (
+            f"Loss did not decrease as expected: {loss.value} >= {loss_val}"
+        )
+        loss_val = loss.value
+
+    assert loss.value < 0.1, f"Final loss is too high than expected: {loss.value}"

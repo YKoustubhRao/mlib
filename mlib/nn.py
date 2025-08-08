@@ -67,25 +67,30 @@ class Tensor:
                 self.grad = module.backward(self.grad)
                 self.backward()
             else:
-                agg_type, (a, b) = next(iter((module.items())))
+                agg_type, histories = next(iter((module.items())))
                 if agg_type == "net_add":
                     a_tensor = Tensor(0)
                     a_tensor.grad = self.grad
-                    a_tensor.history = a
+                    a_tensor.history = histories[0]
                     b_tensor = Tensor(0)
                     b_tensor.grad = self.grad
-                    b_tensor.history = b
+                    b_tensor.history = histories[1]
                     a_tensor.backward()
                     b_tensor.backward()
                 elif agg_type == "net_sub":
                     a_tensor = Tensor(0)
                     a_tensor.grad = self.grad
-                    a_tensor.history = a
+                    a_tensor.history = histories[0]
                     b_tensor = Tensor(0)
                     b_tensor.grad = -self.grad
-                    b_tensor.history = b
+                    b_tensor.history = histories[1]
                     a_tensor.backward()
                     b_tensor.backward()
+                elif agg_type == "net_split":
+                    split_tensor = Tensor(0)
+                    split_tensor.grad = self.grad
+                    split_tensor.history = histories[0]
+                    split_tensor.backward()
 
     def __add__(self, other):
         add_tensor = Tensor(self.value + other.value)
@@ -112,6 +117,14 @@ class Tensor:
         self.push(shape_shift)
         return self
 
+    def split(self, n: int) -> list[Self]:
+        tensor_splits = []
+        for _ in range(n):
+            new_tensor = Tensor(self.value)
+            new_tensor.history = [{"net_split": self.history}]
+            tensor_splits.append(new_tensor)
+        return tensor_splits
+
 
 def flatten(x: Tensor) -> Tensor:
     return x.flatten()
@@ -122,6 +135,13 @@ def Reshape(new_shape: tuple) -> Tensor:
         return x.reshape(new_shape)
 
     return __reshape__
+
+
+def Split(n: int) -> Tensor:
+    def __split__(x: Tensor) -> list[Tensor]:
+        return x.split(n)
+
+    return __split__
 
 
 class LossFunction(ABC):
