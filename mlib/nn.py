@@ -9,6 +9,20 @@ def set_seed(seed: int = 0) -> None:
     np.random.seed(seed)
 
 
+def reduce_grad(grad: np.ndarray, original_shape: tuple) -> np.ndarray:
+    """
+    Sum over broadcasted axes so grad matches original_shape.
+    """
+    # Add leading dims if grad has more dims than original
+    while grad.ndim > len(original_shape):
+        grad = grad.sum(axis=0)
+    # Sum over axes where original dim was 1 (broadcasted)
+    for axis, size in enumerate(original_shape):
+        if size == 1:
+            grad = grad.sum(axis=axis, keepdims=True)
+    return grad
+
+
 def SimpleStep(lr: float = 3e-4) -> None:
     def __grad__(parameter: np.ndarray, gradient: np.ndarray):
         return parameter - lr * gradient
@@ -219,9 +233,12 @@ class Module(ABC):
         self.gradients = {key: 0 for key in self.gradients}
 
     def step(self, optim: Callable) -> None:
-        if self.requires_grad:
+        if self.parameters["requires_grad"]:
             for key in self.gradients:
                 self.parameters[key] = optim(self.parameters[key], self.gradients[key])
+
+    def set_grad_requirement(self, requires_grad: bool):
+        self.parameters["requires_grad"] = requires_grad
 
     def card(self) -> dict:
         return {
@@ -233,24 +250,24 @@ class Module(ABC):
 class Linear(Module):
     def __init__(self, n: int, m: int):
         super().__init__()
-        self.n = n
-        self.m = m
-        self.requires_grad = True
         self.name = "Linear"
         self.parameters = {
             "A": np.random.randn(n, m),
             "B": np.random.randn(n, 1),
-            "requires_grad": self.requires_grad,
+            "requires_grad": True,
         }
         self.gradients = {"A": 0, "B": 0}
         self.forward_cache = None
 
     def forward_pass(self, x: np.ndarray) -> None:
-        self.forward_cache = {"A": np.tile(x.T, (self.n, 1)), "B": np.ones((self.n, 1))}
+        self.forward_cache = {
+            "A": np.tile(x.T, self.parameters["B"].shape),
+            "B": np.ones(self.parameters["B"].shape),
+        }
 
     def backward_pass(self, grad: np.ndarray) -> np.ndarray:
         precompute = self.forward_cache["A"] * grad
-        if self.requires_grad:
+        if self.parameters["requires_grad"]:
             self.gradients["A"] += precompute
             self.gradients["B"] += self.forward_cache["B"] * grad
 
@@ -263,35 +280,41 @@ class Linear(Module):
 class ReLU(Module):
     def __init__(self, delta: float = 0, alpha: float = 0, beta: float = 1):
         super().__init__()
-        self.alpha = alpha
-        self.delta = delta
-        self.beta = beta
-        self.requires_grad = False
         self.name = "ReLU"
         self.parameters = {
             "delta": delta,
             "alpha": alpha,
             "beta": beta,
-            "requires_grad": self.requires_grad,
+            "requires_grad": False,
         }
         self.gradients = {"delta": 0, "alpha": 0, "beta": 0}
         self.forward_cache = None
 
     def forward(self, x: np.ndarray) -> np.ndarray:
         return np.where(
-            x > self.delta, (x - self.delta) * self.beta, (x - self.delta) * self.alpha
+            x > self.parameters["delta"],
+            (x - self.parameters["delta"]) * self.parameters["beta"],
+            (x - self.parameters["delta"]) * self.parameters["alpha"],
         )
 
     def forward_pass(self, x: np.ndarray) -> None:
         self.forward_cache = {
-            "alpha": np.where(x > self.delta, 0, x - self.delta),
-            "beta": np.where(x > self.delta, x - self.delta, 0),
-            "delta": -np.where(x > self.delta, self.beta, self.alpha),
+            "alpha": np.where(
+                x > self.parameters["delta"], 0, x - self.parameters["delta"]
+            ),
+            "beta": np.where(
+                x > self.parameters["delta"], x - self.parameters["delta"], 0
+            ),
+            "delta": -np.where(
+                x > self.parameters["delta"],
+                self.parameters["beta"],
+                self.parameters["alpha"],
+            ),
         }
 
     def backward_pass(self, grad: np.ndarray) -> np.ndarray:
         precompute = self.forward_cache["delta"] * grad
-        if self.requires_grad:
+        if self.parameters["requires_grad"]:
             self.gradients["alpha"] += self.forward_cache["alpha"] * grad
             self.gradients["beta"] += self.forward_cache["beta"] * grad
             self.gradients["delta"] += precompute
@@ -302,12 +325,10 @@ class ReLU(Module):
 class DropOut(Module):
     def __init__(self, ratio: float):
         super().__init__()
-        self.ratio = ratio
-        self.requires_grad = False
         self.name = "DropOut"
         self.parameters = {
             "ratio": ratio,
-            "requires_grad": self.requires_grad,
+            "requires_grad": False,
         }
         self.gradients = {"ratio": 0}
         self.forward_cache = None
@@ -317,7 +338,7 @@ class DropOut(Module):
 
     def forward_pass(self, x: np.ndarray) -> None:
         self.forward_cache = {
-            "mask": (np.random.rand(*x.shape) >= self.ratio).astype(int),
+            "mask": (np.random.rand(*x.shape) >= self.parameters["ratio"]).astype(int),
         }
 
     def backward_pass(self, grad: np.ndarray) -> np.ndarray:
@@ -327,10 +348,9 @@ class DropOut(Module):
 class SoftMax(Module):
     def __init__(self):
         super().__init__()
-        self.requires_grad = False
         self.name = "SoftMax"
         self.parameters = {
-            "requires_grad": self.requires_grad,
+            "requires_grad": False,
         }
         self.gradients = {}
         self.forward_cache = None
@@ -349,18 +369,46 @@ class SoftMax(Module):
         return sigma * (grad - (grad * sigma).sum(axis=-1, keepdims=True))
 
 
+class Parameter(Module):
+    def __init__(self, data: np.ndarray = None, shape: tuple = None):
+        super().__init__()
+        assert data ^ shape, "Exactly one of data or shape must be provided."
+        self.name = "Parameter"
+        self.parameters = {
+            "data": data if data else np.random.randn(*shape),
+            "requires_grad": False,
+        }
+        self.gradients = {"data": 0}
+        self.forward_cache = None
+
+    def forward(self, x: np.ndarray) -> np.ndarray:
+        return self.parameters["data"] * x
+
+    def forward_pass(self, x: np.ndarray) -> None:
+        self.forward_cache = {
+            "x": x,
+        }
+
+    def backward_pass(self, grad: np.ndarray) -> np.ndarray:
+        if self.parameters["requires_grad"]:
+            self.gradients["data"] += reduce_grad(
+                grad * self.forward_cache["x"], self.parameters["data"].shape
+            )
+
+        return reduce_grad(
+            grad * self.parameters["data"], self.forward_cache["x"].shape
+        )
+
+
 class Embedding(Module):
     """Needs completion."""
 
     def __init__(self, vocab_size: int, embed: int):
         super().__init__()
-        self.vocab_size = vocab_size
-        self.embed = embed
-        self.requires_grad = True
         self.name = "Embedding"
         self.parameters = {
             "weights": np.random.randn(vocab_size, embed),
-            "requires_grad": self.requires_grad,
+            "requires_grad": True,
         }
         self.gradients = {"weights": 0}
         self.forward_cache = None
@@ -369,20 +417,10 @@ class Embedding(Module):
         return self.parameters["weights"][x.squeeze()]
 
     def forward_pass(self, x: np.ndarray) -> None:
-        self.forward_cache = {
-            "alpha": np.where(x > self.delta, 0, x - self.delta),
-            "beta": np.where(x > self.delta, x - self.delta, 0),
-            "delta": -np.where(x > self.delta, self.beta, self.alpha),
-        }
+        pass
 
     def backward_pass(self, grad: np.ndarray) -> None:
-        precompute = self.forward_cache["delta"] * grad
-        if self.requires_grad:
-            self.gradients["alpha"] += self.forward_cache["alpha"] * grad
-            self.gradients["beta"] += self.forward_cache["beta"] * grad
-            self.gradients["delta"] += precompute
-
-        return -precompute
+        pass
 
 
 class ModuleSequence:

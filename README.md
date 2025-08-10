@@ -7,4 +7,9 @@ TODOs:
 3. Add layernorm, convolutional layer, maxpool, and many more
 
 PRIORITY:
-1. Double check addition/subtraction logic and complete nn.Embeddings
+1. Complete nn.Embeddings
+
+GOOD PRACTICE:
+1. Run check.sh before PR
+
+Kostubh Rao
